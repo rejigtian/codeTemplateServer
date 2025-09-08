@@ -3,11 +3,18 @@
 # 确保在正确的目录
 cd "$(dirname "$0")"
 
+# 检查并安装 Go
+if ! command -v go &> /dev/null; then
+    echo "Installing Go..."
+    sudo apt-get update
+    sudo apt-get install -y golang-go
+fi
+
+# 设置 GOPROXY
+export GOPROXY=https://goproxy.cn,direct
+
 # 确保目录结构正确
 mkdir -p templates/{live,file}
-
-# 下载依赖
-go mod download
 
 # 停止并删除旧容器（如果存在）
 docker rm -f template-server 2>/dev/null || true
