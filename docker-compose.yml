@@ -1,0 +1,13 @@
+version: '3'
+
+services:
+  template-server:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./templates:/app/templates
+      - ~/.ssh:/root/.ssh:ro  # 挂载 SSH 密钥用于 Git 操作
+    environment:
+      - GIT_REMOTE=git@github.com:rejigtian/codeTemplateFiles.git  # 可以在启动时覆盖
+    restart: always
