@@ -1,3 +1,4 @@
 {
-    "gitRemote": "git@github.com:rejigtian/codeTemplateFiles.git"
+  "gitRemote": "git@github.com:rejigtian/codeTemplateFiles.git",
+  "port": 8080
 }
