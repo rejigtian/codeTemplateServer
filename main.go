@@ -1,237 +1,238 @@
 package main
 
 import (
-    "fmt"
-    "github.com/gin-gonic/gin"
-    "github.com/google/uuid"
-    "net/http"
-    "os"
-    "path/filepath"
-    "sort"
-    "time"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 func requireAuth(requiredPerm Permission) gin.HandlerFunc {
-    return func(c *gin.Context) {
-        apiKey := getAPIKeyFromHeader(c)
-        if apiKey == "" {
-            c.JSON(http.StatusUnauthorized, gin.H{"error": "API key is required"})
-            c.Abort()
-            return
-        }
+	return func(c *gin.Context) {
+		apiKey := getAPIKeyFromHeader(c)
+		if apiKey == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "API key is required"})
+			c.Abort()
+			return
+		}
 
-        if !validateAPIKey(apiKey, requiredPerm) {
-            c.JSON(http.StatusForbidden, gin.H{"error": "Insufficient permissions"})
-            c.Abort()
-            return
-        }
+		if !validateAPIKey(apiKey, requiredPerm) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Insufficient permissions"})
+			c.Abort()
+			return
+		}
 
-        c.Next()
-    }
+		c.Next()
+	}
 }
 
 func main() {
-    // 加载配置
-    if err := loadConfig(); err != nil {
-        fmt.Printf("Warning: Failed to load config: %v\n", err)
-        return
-    }
+	// 加载配置
+	if err := loadConfig(); err != nil {
+		fmt.Printf("Warning: Failed to load config: %v\n", err)
+		return
+	}
 
-    // 创建必要的目录
-    os.MkdirAll("templates/live", 0755)
-    os.MkdirAll("templates/file", 0755)
+	// 创建必要的目录
+	os.MkdirAll("templates/live", 0755)
+	os.MkdirAll("templates/file", 0755)
 
-    // 初始化 Git 仓库
-    gitRepo := NewGitRepo(".")
-    if err := gitRepo.Init(); err != nil {
-        fmt.Printf("Warning: Failed to initialize git repo: %v\n", err)
-    }
+	// 初始化 Git 仓库
+	gitRepo := NewGitRepo(".")
+	if err := gitRepo.Init(); err != nil {
+		fmt.Printf("Warning: Failed to initialize git repo: %v\n", err)
+	}
 
-    metadataStore := NewTemplateMetadata("templates/metadata.json")
-    metadataStore.Load()
+	metadataStore := NewTemplateMetadata("templates/metadata.json")
+	metadataStore.Load()
 
-    r := gin.Default()
+	r := gin.Default()
 
-    // CORS 中间件
-    r.Use(func(c *gin.Context) {
-        c.Header("Access-Control-Allow-Origin", "*")
-        c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, X-API-Key")
-        if c.Request.Method == "OPTIONS" {
-            c.AbortWithStatus(204)
-            return
-        }
-        c.Next()
-    })
+	// CORS 中间件
+	r.Use(func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, X-API-Key")
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+		c.Next()
+	})
 
-    // 列出模板文件 - 需要读权限
-    r.GET("/api/templates/list", requireAuth(PermissionRead), func(c *gin.Context) {
-        templateType := c.Query("type")
-        
-        metadataStore.RLock()
-        defer metadataStore.RUnlock()
+	// 列出模板文件 - 需要读权限
+	r.GET("/api/templates/list", requireAuth(PermissionRead), func(c *gin.Context) {
+		templateType := c.Query("type")
 
-        result := make([]TemplateInfo, 0, len(metadataStore.Templates))
-        for _, tpl := range metadataStore.Templates {
-            if templateType == "" || tpl.Type == templateType {
-                result = append(result, tpl)
-            }
-        }
+		metadataStore.RLock()
+		defer metadataStore.RUnlock()
 
-        // 按创建时间倒序排序
-        sort.SliceStable(result, func(i, j int) bool {
-            if result[i].CreateTime != result[j].CreateTime {
-                return result[i].CreateTime > result[j].CreateTime
-            }
-            return result[i].DisplayName < result[j].DisplayName
-        })
+		result := make([]TemplateInfo, 0, len(metadataStore.Templates))
+		for _, tpl := range metadataStore.Templates {
+			if templateType == "" || tpl.Type == templateType {
+				result = append(result, tpl)
+			}
+		}
 
-        c.JSON(http.StatusOK, result)
-    })
+		// 按创建时间倒序排序
+		sort.SliceStable(result, func(i, j int) bool {
+			if result[i].CreateTime != result[j].CreateTime {
+				return result[i].CreateTime > result[j].CreateTime
+			}
+			return result[i].DisplayName < result[j].DisplayName
+		})
 
-    // 下载模板 - 需要读权限
-    r.GET("/api/templates/:type/:name", requireAuth(PermissionRead), func(c *gin.Context) {
-        templateType := c.Param("type")
-        fileName := c.Param("name")
+		c.JSON(http.StatusOK, result)
+	})
 
-        if templateType != "live" && templateType != "file" {
-            c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid template type"})
-            return
-        }
+	// 下载模板 - 需要读权限
+	r.GET("/api/templates/:type/:name", requireAuth(PermissionRead), func(c *gin.Context) {
+		templateType := c.Param("type")
+		fileName := c.Param("name")
 
-        filePath := filepath.Join("templates", templateType, fileName)
-        if _, err := os.Stat(filePath); os.IsNotExist(err) {
-            c.JSON(http.StatusNotFound, gin.H{"error": "Template not found"})
-            return
-        }
+		if templateType != "live" && templateType != "file" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid template type"})
+			return
+		}
 
-        c.File(filePath)
-    })
+		filePath := filepath.Join("templates", templateType, fileName)
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Template not found"})
+			return
+		}
 
-    // 上传模板 - 需要写权限
-    r.POST("/api/templates/upload/:type", requireAuth(PermissionWrite), func(c *gin.Context) {
-        templateType := c.Param("type")
-        if templateType != "live" && templateType != "file" {
-            c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid template type"})
-            return
-        }
+		c.File(filePath)
+	})
 
-        displayName := c.PostForm("displayName")
-        if displayName == "" {
-            c.JSON(http.StatusBadRequest, gin.H{"error": "Display name is required"})
-            return
-        }
+	// 上传模板 - 需要写权限
+	r.POST("/api/templates/upload/:type", requireAuth(PermissionWrite), func(c *gin.Context) {
+		templateType := c.Param("type")
+		if templateType != "live" && templateType != "file" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid template type"})
+			return
+		}
 
-        file, err := c.FormFile("file")
-        if err != nil {
-            c.JSON(http.StatusBadRequest, gin.H{"error": "File is required"})
-            return
-        }
+		displayName := c.PostForm("displayName")
+		if displayName == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Display name is required"})
+			return
+		}
 
-        ext := filepath.Ext(file.Filename)
-        if ext != ".zip" {
-            c.JSON(http.StatusBadRequest, gin.H{"error": "Only .zip files are allowed"})
-            return
-        }
+		file, err := c.FormFile("file")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "File is required"})
+			return
+		}
 
-        // 生成唯一文件名
-        filename := fmt.Sprintf("%s_%s%s", displayName, uuid.New().String()[:8], ext)
-        targetPath := filepath.Join("templates", templateType, filename)
+		ext := filepath.Ext(file.Filename)
+		if ext != ".zip" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Only .zip files are allowed"})
+			return
+		}
 
-        // 检查是否已存在同名模板
-        metadataStore.Lock()
-        for _, tpl := range metadataStore.Templates {
-            if tpl.DisplayName == displayName && tpl.Type == templateType {
-                metadataStore.Unlock()
-                c.JSON(http.StatusBadRequest, gin.H{"error": "Template with this name already exists"})
-                return
-            }
-        }
+		// 生成唯一文件名
+		filename := fmt.Sprintf("%s_%s%s", displayName, uuid.New().String()[:8], ext)
+		targetPath := filepath.Join("templates", templateType, filename)
 
-        if err := c.SaveUploadedFile(file, targetPath); err != nil {
-            metadataStore.Unlock()
-            c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file"})
-            return
-        }
+		// 检查是否已存在同名模板
+		metadataStore.Lock()
+		for _, tpl := range metadataStore.Templates {
+			if tpl.DisplayName == displayName && tpl.Type == templateType {
+				metadataStore.Unlock()
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Template with this name already exists"})
+				return
+			}
+		}
 
-        // 保存元数据，添加创建时间
-        metadataStore.Templates[filename] = TemplateInfo{
-            DisplayName: displayName,
-            FileName:    filename,
-            Type:        templateType,
-            CreateTime:  time.Now().Unix(),
-        }
-        if err := metadataStore.Save(); err != nil {
-            metadataStore.Unlock()
-            c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save metadata"})
-            return
-        }
+		if err := c.SaveUploadedFile(file, targetPath); err != nil {
+			metadataStore.Unlock()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file"})
+			return
+		}
 
-        // Git 提交
-        if err := gitRepo.AddTemplate(templateType, filename); err != nil {
-            fmt.Printf("Warning: Failed to commit template addition: %v\n", err)
-        }
+		// 保存元数据，添加创建时间
+		metadataStore.Templates[filename] = TemplateInfo{
+			DisplayName: displayName,
+			FileName:    filename,
+			Type:        templateType,
+			CreateTime:  time.Now().Unix(),
+		}
+		if err := metadataStore.Save(); err != nil {
+			metadataStore.Unlock()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save metadata"})
+			return
+		}
 
-        metadataStore.Unlock()
+		// Git 提交
+		if err := gitRepo.AddTemplate(templateType, filename); err != nil {
+			fmt.Printf("Warning: Failed to commit template addition: %v\n", err)
+		}
 
-        c.JSON(http.StatusOK, gin.H{
-            "message":     "Template uploaded successfully",
-            "displayName": displayName,
-            "fileName":    filename,
-            "type":        templateType,
-        })
-    })
+		metadataStore.Unlock()
 
-    // 删除模板 - 需要管理员权限
-    r.DELETE("/api/templates/:type/:name", requireAuth(PermissionAdmin), func(c *gin.Context) {
-        templateType := c.Param("type")
-        fileName := c.Param("name")
+		c.JSON(http.StatusOK, gin.H{
+			"message":     "Template uploaded successfully",
+			"displayName": displayName,
+			"fileName":    filename,
+			"type":        templateType,
+		})
+	})
 
-        if templateType != "live" && templateType != "file" {
-            c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid template type"})
-            return
-        }
+	// 删除模板 - 需要管理员权限
+	r.DELETE("/api/templates/:type/:name", requireAuth(PermissionAdmin), func(c *gin.Context) {
+		templateType := c.Param("type")
+		fileName := c.Param("name")
 
-        // 检查文件是否存在
-        filePath := filepath.Join("templates", templateType, fileName)
-        if _, err := os.Stat(filePath); os.IsNotExist(err) {
-            c.JSON(http.StatusNotFound, gin.H{"error": "Template not found"})
-            return
-        }
+		if templateType != "live" && templateType != "file" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid template type"})
+			return
+		}
 
-        metadataStore.Lock()
-        defer metadataStore.Unlock()
+		// 检查文件是否存在
+		filePath := filepath.Join("templates", templateType, fileName)
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Template not found"})
+			return
+		}
 
-        // 检查模板是否存在于元数据中
-        if _, exists := metadataStore.Templates[fileName]; !exists {
-            c.JSON(http.StatusNotFound, gin.H{"error": "Template metadata not found"})
-            return
-        }
+		metadataStore.Lock()
+		defer metadataStore.Unlock()
 
-        // 删除文件
-        if err := os.Remove(filePath); err != nil {
-            c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete template file"})
-            return
-        }
+		// 检查模板是否存在于元数据中
+		if _, exists := metadataStore.Templates[fileName]; !exists {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Template metadata not found"})
+			return
+		}
 
-        // 删除元数据
-        delete(metadataStore.Templates, fileName)
-        if err := metadataStore.Save(); err != nil {
-            c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update metadata"})
-            return
-        }
+		// 删除文件
+		if err := os.Remove(filePath); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete template file"})
+			return
+		}
 
-        // Git 提交
-        if err := gitRepo.DeleteTemplate(templateType, fileName); err != nil {
-            fmt.Printf("Warning: Failed to commit template deletion: %v\n", err)
-        }
+		// 删除元数据
+		delete(metadataStore.Templates, fileName)
+		if err := metadataStore.Save(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update metadata"})
+			return
+		}
 
-        c.JSON(http.StatusOK, gin.H{
-            "message": "Template deleted successfully",
-            "fileName": fileName,
-            "type": templateType,
-        })
-    })
+		// Git 提交
+		if err := gitRepo.DeleteTemplate(templateType, fileName); err != nil {
+			fmt.Printf("Warning: Failed to commit template deletion: %v\n", err)
+		}
 
-    r.Run(":8080")
+		c.JSON(http.StatusOK, gin.H{
+			"message":  "Template deleted successfully",
+			"fileName": fileName,
+			"type":     templateType,
+		})
+	})
+
+	r.Run(fmt.Sprintf(":%d", config.Port))
 }

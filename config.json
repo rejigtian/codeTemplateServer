@@ -1,3 +1,4 @@
 {
-    "gitRemote": "git@git.17zjh.com:sgg-android/common-sdk-lib/codetemplatefile.git"
+  "gitRemote": "git@git.17zjh.com:sgg-android/common-sdk-lib/codetemplatefile.git",
+  "port": 10888
 }
